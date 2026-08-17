@@ -694,11 +694,115 @@
     return out;
   }
 
+  /* ---------- persistence ---------- */
+
+  // Settings go to localStorage: a few hundred bytes of numbers. The image
+  // goes to IndexedDB, which stores Blobs natively. Cookies are wrong for
+  // both — capped near 4KB and sent with every HTTP request — and base64 in
+  // localStorage would inflate a photo by a third against a ~5MB quota.
+  //
+  // Everything here is wrapped and feature-detected. Where storage is
+  // unavailable or blocked (private windows, embedded previews, denied
+  // permissions) it silently does nothing and the tool works as normal.
+
+  var SETTINGS_KEY = 'rainbow-circle-maker/settings';
+  var SAVED_FIELDS = ['diameter','width','blur','sat','tint','tintcolor',
+                      'inneron','innercolor','innerwidth',
+                      'outeron','outercolor','outerwidth','iscale','irot'];
+  var db = null;
+  var saveTimer = null;
+
+  function openDB(cb){
+    if (!window.indexedDB) return cb(null);
+    var rq;
+    try { rq = indexedDB.open('rainbow-circle-maker', 1); }
+    catch(_){ return cb(null); }
+    rq.onupgradeneeded = function(){
+      try { rq.result.createObjectStore('files'); } catch(_){}
+    };
+    rq.onsuccess = function(){ cb(rq.result); };
+    rq.onerror   = function(){ cb(null); };
+    rq.onblocked = function(){ cb(null); };
+  }
+
+  function putBlob(key, blob){
+    if (!db) return;
+    try { db.transaction('files','readwrite').objectStore('files').put(blob, key); }
+    catch(_){}
+  }
+  function getBlob(key, cb){
+    if (!db) return cb(null);
+    try {
+      var rq = db.transaction('files','readonly').objectStore('files').get(key);
+      rq.onsuccess = function(){ cb(rq.result || null); };
+      rq.onerror   = function(){ cb(null); };
+    } catch(_){ cb(null); }
+  }
+  function delBlob(key){
+    if (!db) return;
+    try { db.transaction('files','readwrite').objectStore('files').delete(key); }
+    catch(_){}
+  }
+
+  function saveNow(){
+    try {
+      var o = {ix: imgPos.x, iy: imgPos.y};
+      SAVED_FIELDS.forEach(function(k){
+        var n = el(k);
+        o[k] = (n.type === 'checkbox') ? n.checked : n.value;
+      });
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(o));
+    } catch(_){}
+  }
+
+  // Coalesced, because a localStorage write is synchronous and a slider drag
+  // fires dozens of events a second.
+  function saveSoon(){
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveNow, 400);
+  }
+
+  function loadSettings(){
+    var raw = null, o = null;
+    try { raw = localStorage.getItem(SETTINGS_KEY); } catch(_){ return; }
+    if (!raw) return;
+    try { o = JSON.parse(raw); } catch(_){ return; }
+    if (!o || typeof o !== 'object') return;
+    SAVED_FIELDS.forEach(function(k){
+      if (!(k in o)) return;
+      var n = el(k);
+      if (n.type === 'checkbox') n.checked = !!o[k];
+      else n.value = o[k];
+    });
+    if (typeof o.ix === 'number' && isFinite(o.ix)) imgPos.x = o.ix;
+    if (typeof o.iy === 'number' && isFinite(o.iy)) imgPos.y = o.iy;
+    el('innerwidth').disabled = !el('inneron').checked;
+    el('outerwidth').disabled = !el('outeron').checked;
+  }
+
+  function restoreImage(){
+    openDB(function(handle){
+      db = handle;
+      getBlob('image', function(blob){
+        if (!blob) return;
+        var im = new Image();
+        im.onload = function(){
+          userImg = im;
+          showImgControls(true);
+          schedule();
+        };
+        im.onerror = function(){ delBlob('image'); };
+        im.src = URL.createObjectURL(blob);
+      });
+    });
+  }
+
   /* ---------- preview ---------- */
 
   var pending = false;
 
   function schedule(){
+    saveSoon();
     if (pending) return;
     pending = true;
     requestAnimationFrame(function(){ pending = false; renderPreview(); });
@@ -833,6 +937,7 @@
       el('irot').value = 0;
       showImgControls(true);
       status.textContent = '';
+      putBlob('image', file);
       schedule();
     };
     im.onerror = function(){
@@ -864,6 +969,7 @@
     el('iscale').value = 100;
     el('irot').value = 0;
     showImgControls(false);
+    delBlob('image');
     schedule();
   });
 
@@ -976,7 +1082,10 @@
   }, {passive:false});
 
   window.addEventListener('resize', schedule);
+
+  loadSettings();
   renderPreview();
+  restoreImage();
 })();
 </script>
 </body>
