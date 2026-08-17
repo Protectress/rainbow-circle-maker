@@ -641,26 +641,33 @@
     // (transparent across the interior) would erase nothing at all.
     if (innerR > 0) cut(innerR);
 
-    // --- inner glow ---
-    if (p.innerOn && p.innerReach > 0 && innerR > 0){
-      var tF = Math.max(0, Math.min(0.999, G.iFade / innerR));
-      var tI = Math.min(1, Math.max(tF + 0.0005, G.iPlat / innerR));
-      var ig = ctx.createRadialGradient(c,c,0,c,c,innerR);
-      ig.addColorStop(0, rgba(p.innerRgb,0));
-      if (tF > 0.0005) ig.addColorStop(tF, rgba(p.innerRgb,0));
-      ig.addColorStop(tI, rgba(p.innerRgb,1));
-      ig.addColorStop(1,  rgba(p.innerRgb,1));
-      ctx.fillStyle = ig;
-      ctx.beginPath(); ctx.arc(c,c,innerR,0,Math.PI*2); ctx.fill();
-    }
-
-    // --- composite: image underneath, blurred ring over the top ---
+    // --- composite, bottom to top: inner glow, image, then the ring ---
     // The ring is blurred on its way into the output; the image is not, so it
     // stays sharp. Its crop mask gets the same blur radius, which means the
     // band's soft inner edge fades onto solid image instead of onto a hard cut.
     var out = document.createElement('canvas');
     out.width = out.height = size;
     var octx = out.getContext('2d');
+    var oc = size/2;
+
+    // Inner glow is the bottom layer — a backdrop the image sits on, not a
+    // wash over it. Filled out to the band's midline (the same radius the
+    // image is cropped at) so its own feathered edge hides under the opaque
+    // band instead of leaving a translucent seam where the two layers meet.
+    if (p.innerOn && p.innerReach > 0 && G.innerR > 0){
+      var tF = Math.max(0, Math.min(0.999, G.iFade / G.innerR));
+      var tI = Math.min(1, Math.max(tF + 0.0005, G.iPlat / G.innerR));
+      var ig = octx.createRadialGradient(oc,oc,0,oc,oc,G.innerR);
+      ig.addColorStop(0, rgba(p.innerRgb,0));
+      if (tF > 0.0005) ig.addColorStop(tF, rgba(p.innerRgb,0));
+      ig.addColorStop(tI, rgba(p.innerRgb,1));
+      ig.addColorStop(1,  rgba(p.innerRgb,1));
+      octx.save();
+      if (blurPx > 0.05) octx.filter = 'blur(' + blurPx + 'px)';
+      octx.fillStyle = ig;
+      octx.beginPath(); octx.arc(oc,oc,G.cropR,0,Math.PI*2); octx.fill();
+      octx.restore();
+    }
 
     if (p.img && p.img.width){
       var im = p.img;
