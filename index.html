@@ -256,6 +256,14 @@
   .exp:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
   .exp .dim{font-family:var(--mono);font-size:11px;color:var(--muted)}
 
+  .btnrow{display:flex;gap:8px;margin-bottom:9px}
+  .btnrow .ghost{margin:0}
+
+  canvas#preview.movable{cursor:grab;touch-action:none}
+  canvas#preview.movable:active{cursor:grabbing}
+
+  .frame.dropping{border-color:var(--gold);box-shadow:inset 0 0 0 2px rgba(198,166,100,.3)}
+
   .ghost{
     width:100%;
     background:transparent;border:1px solid var(--rule);border-radius:2px;
@@ -312,6 +320,29 @@
   <aside class="panel">
 
     <fieldset>
+      <legend>Image</legend>
+      <input type="file" id="imgfile" accept="image/*" hidden>
+      <button class="ghost" id="addimg">Choose an image</button>
+
+      <div id="imgctl" hidden style="margin-top:11px">
+        <div class="row">
+          <div class="rowhead"><label for="iscale">Size</label><span class="val" id="v-iscale"></span></div>
+          <input type="range" id="iscale" min="20" max="400" step="1" value="100">
+        </div>
+        <div class="row">
+          <div class="rowhead"><label for="irot">Rotation</label><span class="val" id="v-irot"></span></div>
+          <input type="range" id="irot" min="-180" max="180" step="1" value="0">
+        </div>
+        <div class="btnrow">
+          <button class="ghost" id="recenter">Recenter</button>
+          <button class="ghost" id="removeimg">Remove</button>
+        </div>
+        <div class="readout">Drag to move &middot; scroll to resize &middot; shift-scroll to rotate</div>
+      </div>
+      <div class="readout" id="imghint" style="margin-top:8px">Sits beneath the ring, cropped to the circle. You can also drop a file on the canvas.</div>
+    </fieldset>
+
+    <fieldset>
       <legend>Ring</legend>
 
       <div class="row">
@@ -335,7 +366,7 @@
 
       <div class="row">
         <div class="rowhead"><label for="sat">Saturation</label><span class="val" id="v-sat"></span></div>
-        <input type="range" id="sat" min="0" max="100" step="1" value="100">
+        <input type="range" id="sat" min="0" max="100" step="1" value="85">
       </div>
 
       <div class="inline">
@@ -405,9 +436,14 @@
   var status  = el('status');
   var ringstat= el('ringstat');
 
+  // Offsets are fractions of the canvas, so preview and export agree at
+  // any resolution. 0,0 is dead centre.
+  var userImg = null;
+  var imgPos  = {x:0, y:0};
+
   var DEFAULTS = {
     diameter:74, width:7.4, blur:0.28,
-    sat:100, tintcolor:'#ffffff', tint:0,
+    sat:85, tintcolor:'#ffffff', tint:0,
     inneron:false, innercolor:'#ffffff', innerwidth:100,
     outeron:true,  outercolor:'#ffffff', outerwidth:100
   };
@@ -452,6 +488,11 @@
       diameter:   parseFloat(el('diameter').value),
       width:      parseFloat(el('width').value),
       blur:       parseFloat(el('blur').value),
+      img:        userImg,
+      ix:         imgPos.x,
+      iy:         imgPos.y,
+      iscale:     parseFloat(el('iscale').value)/100,
+      irot:       parseFloat(el('irot').value),
       sat:        parseFloat(el('sat').value)/100,
       tintRgb:    hexToRgb(el('tintcolor').value),
       tint:       parseFloat(el('tint').value),
@@ -506,8 +547,13 @@
     var iFade = innerR * (1 - Math.min(1, iT * 2));   // transparent inside this
     var iPlat = innerR * (1 - Math.max(0, iT * 2 - 1)); // solid outside this
 
+    // The image is cropped at the band's midline: past the band's inner
+    // fade so that fade lands on solid image, and short of its outer fade
+    // so the image never shows through the outside edge.
+    var cropR = innerR + ringW * 0.5;
+
     return {
-      c:c, outerR:outerR, ringW:ringW, innerR:innerR,
+      c:c, outerR:outerR, ringW:ringW, innerR:innerR, cropR:cropR,
       tIn: outerR > 0 ? innerR/outerR : 0,
       maxR:maxR, oPlat:oPlat, iFade:iFade, iPlat:iPlat,
       blurPx:blurPx, k:k
@@ -608,10 +654,34 @@
       ctx.beginPath(); ctx.arc(c,c,innerR,0,Math.PI*2); ctx.fill();
     }
 
-    // --- blur, cropping the padding back off ---
+    // --- composite: image underneath, blurred ring over the top ---
+    // The ring is blurred on its way into the output; the image is not, so it
+    // stays sharp. Its crop mask gets the same blur radius, which means the
+    // band's soft inner edge fades onto solid image instead of onto a hard cut.
     var out = document.createElement('canvas');
     out.width = out.height = size;
     var octx = out.getContext('2d');
+
+    if (p.img && p.img.width){
+      var im = p.img;
+      var layer = document.createElement('canvas');
+      layer.width = layer.height = W;
+      var lx = layer.getContext('2d');
+      var cover = (2 * G.cropR) / Math.max(1, Math.min(im.width, im.height));
+      var sc = cover * p.iscale;
+      var dw = im.width * sc, dh = im.height * sc;
+      lx.save();
+      lx.translate(c + p.ix*size, c + p.iy*size);
+      if (p.irot) lx.rotate(p.irot * Math.PI / 180);
+      lx.drawImage(im, -dw/2, -dh/2, dw, dh);
+      lx.restore();
+      lx.globalCompositeOperation = 'destination-in';
+      if (blurPx > 0.05) lx.filter = 'blur(' + blurPx + 'px)';
+      lx.fillStyle = '#000';
+      lx.beginPath(); lx.arc(c,c,G.cropR,0,Math.PI*2); lx.fill();
+      octx.drawImage(layer, -pad, -pad);
+    }
+
     if (blurPx > 0.05) octx.filter = 'blur(' + blurPx + 'px)';
     octx.drawImage(base, -pad, -pad);
     return out;
@@ -651,6 +721,8 @@
     el('v-diameter').textContent   = p.diameter.toFixed(1) + '% of frame';
     el('v-width').textContent      = p.width.toFixed(2) + '% of frame';
     el('v-blur').textContent       = p.blur.toFixed(2) + '% of frame';
+    el('v-iscale').textContent     = Math.round(p.iscale*100) + '%';
+    el('v-irot').textContent       = (p.irot > 0 ? '+' : '') + p.irot + '\u00B0';
     el('v-sat').textContent        = Math.round(p.sat*100) + '%';
     el('v-tint').textContent       = p.tint + '%';
     el('v-innerwidth').textContent = Math.round(p.innerReach*100) + '%';
@@ -730,6 +802,171 @@
     status.textContent = 'Reset.';
     schedule();
   });
+
+  /* ---------- the image layer ---------- */
+
+  function showImgControls(on){
+    el('imgctl').hidden = !on;
+    el('imghint').hidden = on;
+    el('addimg').textContent = on ? 'Replace image' : 'Choose an image';
+    preview.classList.toggle('movable', on);
+  }
+
+  function loadFile(file){
+    if (!file || !/^image\//.test(file.type)){
+      status.textContent = 'That file is not an image.';
+      return;
+    }
+    var url = URL.createObjectURL(file);
+    var im = new Image();
+    im.onload = function(){
+      userImg = im;
+      imgPos.x = 0; imgPos.y = 0;
+      el('iscale').value = 100;
+      el('irot').value = 0;
+      showImgControls(true);
+      status.textContent = '';
+      schedule();
+    };
+    im.onerror = function(){
+      URL.revokeObjectURL(url);
+      status.textContent = 'Could not read that image.';
+    };
+    im.src = url;
+  }
+
+  el('addimg').addEventListener('click', function(){ el('imgfile').click(); });
+  el('imgfile').addEventListener('change', function(){
+    if (this.files && this.files[0]) loadFile(this.files[0]);
+    this.value = '';
+  });
+
+  el('iscale').addEventListener('input', schedule);
+  el('irot').addEventListener('input', schedule);
+
+  el('recenter').addEventListener('click', function(){
+    imgPos.x = 0; imgPos.y = 0;
+    el('iscale').value = 100;
+    el('irot').value = 0;
+    schedule();
+  });
+
+  el('removeimg').addEventListener('click', function(){
+    userImg = null;
+    imgPos.x = 0; imgPos.y = 0;
+    el('iscale').value = 100;
+    el('irot').value = 0;
+    showImgControls(false);
+    schedule();
+  });
+
+  // drop a file anywhere on the stage
+  ['dragenter','dragover'].forEach(function(ev){
+    frame.addEventListener(ev, function(e){
+      e.preventDefault(); frame.classList.add('dropping');
+    });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    frame.addEventListener(ev, function(e){
+      e.preventDefault(); frame.classList.remove('dropping');
+    });
+  });
+  frame.addEventListener('drop', function(e){
+    if (e.dataTransfer && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  // One finger drags. Two fingers pinch to resize and twist to rotate, both
+  // at once, with the midpoint still panning — so the image tracks the hands.
+  // Every gesture moves only the image; the ring is never touched.
+  var pointers = new Map();
+  var gesture  = null;
+  var lastX = 0, lastY = 0;
+
+  function wrapDeg(d){ return ((d + 180) % 360 + 360) % 360 - 180; }
+  function clampScale(v){ return Math.min(400, Math.max(20, v)); }
+  function pts(){ return Array.from(pointers.values()); }
+
+  // Re-baseline whenever the number of fingers changes, so adding or lifting
+  // one does not make the image jump.
+  function rebase(){
+    var a = pts();
+    if (a.length >= 2){
+      var dx = a[1].x - a[0].x, dy = a[1].y - a[0].y;
+      gesture = {
+        dist:  Math.hypot(dx,dy) || 1,
+        ang:   Math.atan2(dy,dx),
+        scale: parseFloat(el('iscale').value),
+        rot:   parseFloat(el('irot').value),
+        mx: (a[0].x + a[1].x)/2,
+        my: (a[0].y + a[1].y)/2
+      };
+    } else {
+      gesture = null;
+      if (a.length === 1){ lastX = a[0].x; lastY = a[0].y; }
+    }
+  }
+
+  preview.addEventListener('pointerdown', function(e){
+    if (!userImg) return;
+    pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    try { preview.setPointerCapture(e.pointerId); } catch(_){}
+    rebase();
+    e.preventDefault();
+  });
+
+  preview.addEventListener('pointermove', function(e){
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    var span = preview.clientWidth || 1;
+    var a = pts();
+
+    if (a.length >= 2 && gesture){
+      var dx = a[1].x - a[0].x, dy = a[1].y - a[0].y;
+      var dist = Math.hypot(dx,dy) || 1;
+      var ang  = Math.atan2(dy,dx);
+
+      el('iscale').value = clampScale(gesture.scale * (dist / gesture.dist));
+      // Screen y runs downward, so a clockwise twist increases atan2 — which
+      // matches the slider, where positive is also clockwise.
+      el('irot').value = wrapDeg(gesture.rot + (ang - gesture.ang) * 180 / Math.PI);
+
+      var mx = (a[0].x + a[1].x)/2, my = (a[0].y + a[1].y)/2;
+      imgPos.x += (mx - gesture.mx) / span;
+      imgPos.y += (my - gesture.my) / span;
+      gesture.mx = mx; gesture.my = my;
+      schedule();
+    } else if (a.length === 1){
+      imgPos.x += (e.clientX - lastX) / span;
+      imgPos.y += (e.clientY - lastY) / span;
+      lastX = e.clientX; lastY = e.clientY;
+      schedule();
+    }
+  });
+
+  ['pointerup','pointercancel','pointerleave'].forEach(function(ev){
+    preview.addEventListener(ev, function(e){
+      if (!pointers.has(e.pointerId)) return;
+      pointers.delete(e.pointerId);
+      try { preview.releasePointerCapture(e.pointerId); } catch(_){}
+      rebase();
+    });
+  });
+
+  preview.addEventListener('wheel', function(e){
+    if (!userImg) return;
+    e.preventDefault();
+    if (e.shiftKey){
+      var rot = el('irot');
+      var deg = parseFloat(rot.value) + (e.deltaY > 0 ? -3 : 3);
+      // wrap rather than clamp, so rotation never runs into a wall
+      rot.value = ((deg + 180) % 360 + 360) % 360 - 180;
+    } else {
+      var node = el('iscale');
+      var next = parseFloat(node.value) * (e.deltaY > 0 ? 0.94 : 1.064);
+      node.value = Math.min(400, Math.max(20, next));
+    }
+    schedule();
+  }, {passive:false});
 
   window.addEventListener('resize', schedule);
   renderPreview();
