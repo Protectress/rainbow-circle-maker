@@ -242,18 +242,6 @@
   input[type=color]::-moz-color-swatch{border:0;border-radius:1px}
   input[type=color]:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 
-  .seg{display:flex;border:1px solid var(--rule);border-radius:2px;overflow:hidden}
-  .seg button{
-    flex:1;
-    background:transparent;border:0;
-    color:var(--muted);
-    font-family:var(--ui);font-size:12.5px;
-    padding:6px 4px;cursor:pointer;
-  }
-  .seg button + button{border-left:1px solid var(--rule)}
-  .seg button[aria-pressed="true"]{background:var(--raise);color:var(--parchment)}
-  .seg button:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
-
   .exp{
     width:100%;
     display:flex;justify-content:space-between;align-items:baseline;gap:10px;
@@ -340,24 +328,10 @@
         <div class="rowhead"><label for="blur">Blur</label><span class="val" id="v-blur"></span></div>
         <input type="range" id="blur" min="0" max="6" step="0.05" value="0.28">
       </div>
-
-      <div class="inline" style="margin-bottom:0">
-        <input type="checkbox" id="fit" checked>
-        <label for="fit">Fit inside frame</label>
-        <span class="val" id="v-fit"></span>
-      </div>
     </fieldset>
 
     <fieldset>
       <legend>Color</legend>
-
-      <div class="row">
-        <div class="rowhead"><span>Spectrum</span></div>
-        <div class="seg" id="modeseg">
-          <button data-mode="smooth" aria-pressed="true">Smooth</button>
-          <button data-mode="bands"  aria-pressed="false">7 bands</button>
-        </div>
-      </div>
 
       <div class="row">
         <div class="rowhead"><label for="sat">Saturation</label><span class="val" id="v-sat"></span></div>
@@ -432,13 +406,11 @@
   var ringstat= el('ringstat');
 
   var DEFAULTS = {
-    diameter:74, width:7.4, blur:0.28, fit:true,
-    mode:'smooth', sat:100, tintcolor:'#ffffff', tint:0,
+    diameter:74, width:7.4, blur:0.28,
+    sat:100, tintcolor:'#ffffff', tint:0,
     inneron:false, innercolor:'#ffffff', innerwidth:100,
     outeron:true,  outercolor:'#ffffff', outerwidth:100
   };
-
-  var mode = DEFAULTS.mode;
 
   /* ---------- color helpers ---------- */
 
@@ -457,12 +429,10 @@
     return lerp3(SOFT[i], FULL[i], sat);
   }
 
-  // pos 0 = outer edge (red) -> 1 = inner edge (violet)
-  function spectrum(pos, sat, smooth){
-    if (!smooth){
-      var idx = Math.min(6, Math.max(0, Math.floor(pos*7)));
-      return band(idx, sat);
-    }
+  // pos 0 = outer edge (red) -> 1 = inner edge (violet).
+  // Interpolates across adjacent hues, so the seven named colours are
+  // waypoints rather than discrete bands.
+  function spectrum(pos, sat){
     var f = pos*6;
     var i0 = Math.min(5, Math.floor(f));
     return lerp3(band(i0,sat), band(i0+1,sat), f-i0);
@@ -482,8 +452,6 @@
       diameter:   parseFloat(el('diameter').value),
       width:      parseFloat(el('width').value),
       blur:       parseFloat(el('blur').value),
-      fit:        el('fit').checked,
-      smooth:     mode === 'smooth',
       sat:        parseFloat(el('sat').value)/100,
       tintRgb:    hexToRgb(el('tintcolor').value),
       tint:       parseFloat(el('tint').value),
@@ -511,17 +479,16 @@
     var blurPx = size * p.blur / 100;
     var k = 1;
 
-    // Fit guards the band alone — its diameter plus the tail of the blur.
-    // A Gaussian is visibly gone by about 2.5 sigma. Glow reach is deliberately
-    // excluded: it is allowed to leave the frame, so it must never move the band.
-    if (p.fit){
-      var need = outerR + blurPx * 2.5;
-      if (need > c && need > 0){
-        k = c / need;
-        outerR *= k;
-        ringW  *= k;
-        blurPx *= k;
-      }
+    // Keep the band's blurred outer edge inside the frame. A Gaussian is
+    // visibly gone by about 2.5 sigma. Glow reach is deliberately excluded
+    // from this: it is allowed to leave the frame, so it must never move
+    // the band. Only large diameters or heavy blur trigger any scaling.
+    var need = outerR + blurPx * 2.5;
+    if (need > c && need > 0){
+      k = c / need;
+      outerR *= k;
+      ringW  *= k;
+      blurPx *= k;
     }
 
     var innerR = Math.max(0, outerR - ringW);
@@ -597,22 +564,12 @@
       var stops = [];
       var i, pos, t, col;
 
-      if (p.smooth){
-        var N = 64;
-        for (i=0;i<=N;i++){
-          pos = i/N;
-          t = 1 - pos*(1-tIn);
-          col = tinted(spectrum(pos,p.sat,true), p.tintRgb, p.tint);
-          stops.push([t, rgba(col,1)]);
-        }
-      } else {
-        for (i=0;i<7;i++){
-          var tHi = 1 - (i/7)*(1-tIn);
-          var tLo = 1 - ((i+1)/7)*(1-tIn);
-          col = tinted(band(i,p.sat), p.tintRgb, p.tint);
-          stops.push([tLo, rgba(col,1)]);
-          stops.push([tHi, rgba(col,1)]);
-        }
+      var N = 64;
+      for (i=0;i<=N;i++){
+        pos = i/N;
+        t = 1 - pos*(1-tIn);
+        col = tinted(spectrum(pos,p.sat), p.tintRgb, p.tint);
+        stops.push([t, rgba(col,1)]);
       }
 
       stops.sort(function(a,b){ return a[0]-b[0]; });
@@ -703,7 +660,6 @@
     // fitting, which is the number that matters when the ring has to sit
     // on top of something else.
     var G6 = geometry(6000, p);
-    el('v-fit').textContent = G6.k < 0.999 ? 'scaled to ' + Math.round(G6.k*100) + '%' : 'no scaling';
     ringstat.textContent = Math.round(G6.outerR*2) + 'px ring · ' +
                            Math.round(G6.ringW) + 'px band at 6000';
   }
@@ -734,7 +690,7 @@
 
   /* ---------- wiring ---------- */
 
-  var inputs = ['diameter','width','blur','fit','sat','tint','tintcolor',
+  var inputs = ['diameter','width','blur','sat','tint','tintcolor',
                 'inneron','innercolor','innerwidth',
                 'outeron','outercolor','outerwidth'];
 
@@ -748,16 +704,6 @@
   });
   el('outeron').addEventListener('change', function(){
     el('outerwidth').disabled = !this.checked;
-  });
-
-  Array.prototype.forEach.call(document.querySelectorAll('#modeseg button'), function(b){
-    b.addEventListener('click', function(){
-      mode = b.dataset.mode;
-      Array.prototype.forEach.call(document.querySelectorAll('#modeseg button'), function(o){
-        o.setAttribute('aria-pressed', String(o === b));
-      });
-      schedule();
-    });
   });
 
   Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(b){
@@ -775,14 +721,9 @@
 
   el('reset').addEventListener('click', function(){
     Object.keys(DEFAULTS).forEach(function(k){
-      if (k === 'mode') return;
       var node = el(k);
       if (node.type === 'checkbox') node.checked = DEFAULTS[k];
       else node.value = DEFAULTS[k];
-    });
-    mode = DEFAULTS.mode;
-    Array.prototype.forEach.call(document.querySelectorAll('#modeseg button'), function(o){
-      o.setAttribute('aria-pressed', String(o.dataset.mode === mode));
     });
     el('innerwidth').disabled = !DEFAULTS.inneron;
     el('outerwidth').disabled = !DEFAULTS.outeron;
