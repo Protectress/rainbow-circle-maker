@@ -105,6 +105,11 @@
     display:block;
     max-width:100%;
     max-height:100%;
+    /* Without these, a long press on iOS raises the Save Image sheet
+       mid-drag and a two-finger gesture selects the page instead. */
+    -webkit-touch-callout:none;
+    -webkit-user-select:none;
+    user-select:none;
   }
 
   .stagefoot{
@@ -144,6 +149,7 @@
     font-size:11.5px;
     color:var(--muted);
   }
+  .sub.warn{color:var(--gold)}
 
   /* ---------- panel ---------- */
 
@@ -270,7 +276,8 @@
     color:var(--muted);font-family:var(--ui);font-size:12.5px;
     padding:7px;cursor:pointer;
   }
-  .ghost:hover{color:var(--parchment);border-color:var(--muted)}
+  .ghost:hover:not(:disabled){color:var(--parchment);border-color:var(--muted)}
+  .ghost:disabled{opacity:.32;cursor:default}
   .ghost:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 
   .status{
@@ -297,6 +304,7 @@
     <header>
       <h1>Rainbow Circle Maker</h1>
       <span class="sub" id="ringstat">—</span>
+      <span class="sub warn" id="browsernote" hidden>Safari draws the soft edges hard &mdash; Chrome, Edge or Firefox for the full effect</span>
     </header>
 
     <div class="framewrap">
@@ -413,7 +421,14 @@
       <button class="exp" data-size="3840"><span>Export</span><span class="dim">3840 × 3840</span></button>
       <button class="exp" data-size="6000"><span>Export</span><span class="dim">6000 × 6000</span></button>
       <div class="status" id="status"></div>
-      <button class="ghost" id="reset">Reset to defaults</button>
+      <div class="btnrow">
+        <button class="ghost" id="undo">Undo</button>
+        <button class="ghost" id="redo">Redo</button>
+      </div>
+      <div class="btnrow" style="margin-bottom:0">
+        <button class="ghost" id="reset">Reset settings</button>
+        <button class="ghost" id="clearall">Clear all</button>
+      </div>
     </fieldset>
 
   </aside>
@@ -438,8 +453,9 @@
 
   // Offsets are fractions of the canvas, so preview and export agree at
   // any resolution. 0,0 is dead centre.
-  var userImg = null;
-  var imgPos  = {x:0, y:0};
+  var userImg  = null;
+  var lastBlob = null;
+  var imgPos   = {x:0, y:0};
 
   var DEFAULTS = {
     diameter:74, width:7.4, blur:0.28,
@@ -694,6 +710,23 @@
     return out;
   }
 
+  /* ---------- browser capability ---------- */
+
+  // Canvas 2D `filter` is not Baseline: Safari does not implement it. Nothing
+  // breaks without it — assigning the property on a context that lacks it just
+  // creates an ordinary own property, so drawing carries on — but every soft
+  // edge renders hard. Detect it and say so rather than leave people puzzled.
+  function hasCanvasFilter(){
+    try {
+      var t = document.createElement('canvas');
+      t.width = t.height = 1;
+      var x = t.getContext('2d');
+      if (!x || !('filter' in x)) return false;
+      x.filter = 'blur(1px)';
+      return x.filter === 'blur(1px)';
+    } catch(_){ return false; }
+  }
+
   /* ---------- persistence ---------- */
 
   // Settings go to localStorage: a few hundred bytes of numbers. The image
@@ -788,13 +821,111 @@
         var im = new Image();
         im.onload = function(){
           userImg = im;
+          lastBlob = blob;
           showImgControls(true);
-          schedule();
+          restoring = true;
+          renderPreview();
+          restoring = false;
+          // The restored state is the baseline, not an edit on top of an
+          // empty one — otherwise the first undo would drop the image.
+          seedHistory();
         };
         im.onerror = function(){ delBlob('image'); };
         im.src = URL.createObjectURL(blob);
       });
     });
+  }
+
+  /* ---------- undo history ---------- */
+
+  // A snapshot is every control value plus the image transform and a reference
+  // to the loaded image. Images are stored by reference, not copied, so
+  // consecutive entries sharing one image cost nothing extra.
+  var past = [];
+  var pastIdx = -1;
+  var histTimer = null;
+  var restoring = false;
+  var HIST_MAX = 40;
+
+  function snapshot(){
+    var o = {ix: imgPos.x, iy: imgPos.y, img: userImg, blob: lastBlob};
+    SAVED_FIELDS.forEach(function(k){
+      var n = el(k);
+      o[k] = (n.type === 'checkbox') ? n.checked : n.value;
+    });
+    return o;
+  }
+
+  function sameState(a, b){
+    if (!a || !b) return false;
+    if (a.ix !== b.ix || a.iy !== b.iy || a.img !== b.img) return false;
+    return SAVED_FIELDS.every(function(k){ return String(a[k]) === String(b[k]); });
+  }
+
+  function commitHistory(){
+    histTimer = null;
+    var snap = snapshot();
+    if (sameState(past[pastIdx], snap)) return;
+    past = past.slice(0, pastIdx + 1);
+    past.push(snap);
+    if (past.length > HIST_MAX) past.shift();
+    pastIdx = past.length - 1;
+    syncHistoryButtons();
+  }
+
+  // Debounced, so a slider drag or a pinch becomes one undo step rather
+  // than a hundred.
+  function pushSoon(){
+    if (restoring) return;
+    if (histTimer) clearTimeout(histTimer);
+    histTimer = setTimeout(commitHistory, 500);
+  }
+
+  // If an edit is still pending when undo is pressed, land it first —
+  // otherwise the first press would skip straight past that edit.
+  function flushHistory(){
+    if (histTimer){ clearTimeout(histTimer); commitHistory(); }
+  }
+
+  function applyState(o){
+    restoring = true;
+    SAVED_FIELDS.forEach(function(k){
+      var n = el(k);
+      if (n.type === 'checkbox') n.checked = !!o[k];
+      else n.value = o[k];
+    });
+    imgPos.x = o.ix; imgPos.y = o.iy;
+    userImg  = o.img  || null;
+    lastBlob = o.blob || null;
+    el('innerwidth').disabled = !el('inneron').checked;
+    el('outerwidth').disabled = !el('outeron').checked;
+    showImgControls(!!userImg);
+    if (lastBlob) putBlob('image', lastBlob); else delBlob('image');
+    saveSoon();
+    renderPreview();
+    restoring = false;
+    syncHistoryButtons();
+  }
+
+  function undo(){
+    flushHistory();
+    if (pastIdx > 0){ pastIdx--; applyState(past[pastIdx]); }
+  }
+  function redo(){
+    flushHistory();
+    if (pastIdx < past.length - 1){ pastIdx++; applyState(past[pastIdx]); }
+  }
+  function syncHistoryButtons(){
+    el('undo').disabled = pastIdx <= 0;
+    el('redo').disabled = pastIdx >= past.length - 1;
+  }
+
+  function seedHistory(){
+    restoring = true;
+    past = [snapshot()];
+    pastIdx = 0;
+    restoring = false;
+    syncHistoryButtons();
   }
 
   /* ---------- preview ---------- */
@@ -803,6 +934,7 @@
 
   function schedule(){
     saveSoon();
+    pushSoon();
     if (pending) return;
     pending = true;
     requestAnimationFrame(function(){ pending = false; renderPreview(); });
@@ -852,10 +984,18 @@
   function exportAt(size){
     status.textContent = 'Rendering ' + size + ' × ' + size + '…';
     setTimeout(function(){
-      var img = draw(size, readParams());
+      // Mobile Safari caps total canvas area, and 6000 x 6000 is over the
+      // limit on many phones. The allocation may throw, or succeed and then
+      // refuse to encode — handle both instead of handing back a blank file.
+      var img = null;
+      try { img = draw(size, readParams()); } catch(_){ img = null; }
+      if (!img || img.width !== size){
+        status.textContent = size + ' \u00D7 ' + size + ' is too large for this device. Try a smaller size.';
+        return;
+      }
       img.toBlob(function(blob){
         if (!blob){
-          status.textContent = 'Export failed — try a smaller size.';
+          status.textContent = size + ' \u00D7 ' + size + ' is too large for this device. Try a smaller size.';
           return;
         }
         var url = URL.createObjectURL(blob);
@@ -902,7 +1042,7 @@
     b.addEventListener('click', function(){ exportAt(parseInt(b.dataset.size,10)); });
   });
 
-  el('reset').addEventListener('click', function(){
+  function applyDefaults(){
     Object.keys(DEFAULTS).forEach(function(k){
       var node = el(k);
       if (node.type === 'checkbox') node.checked = DEFAULTS[k];
@@ -910,8 +1050,44 @@
     });
     el('innerwidth').disabled = !DEFAULTS.inneron;
     el('outerwidth').disabled = !DEFAULTS.outeron;
-    status.textContent = 'Reset.';
+  }
+
+  // Reset returns the ring settings to defaults and leaves the image alone.
+  el('reset').addEventListener('click', function(){
+    applyDefaults();
+    status.textContent = 'Settings reset.';
     schedule();
+  });
+
+  // Clear all wipes the image and the saved state too, and starts a fresh
+  // history — so it is deliberately not undoable.
+  el('clearall').addEventListener('click', function(){
+    applyDefaults();
+    userImg = null;
+    lastBlob = null;
+    imgPos.x = 0; imgPos.y = 0;
+    el('iscale').value = 100;
+    el('irot').value = 0;
+    showImgControls(false);
+    delBlob('image');
+    try { localStorage.removeItem(SETTINGS_KEY); } catch(_){}
+    if (histTimer){ clearTimeout(histTimer); histTimer = null; }
+    if (saveTimer){ clearTimeout(saveTimer); saveTimer = null; }
+    status.textContent = 'Cleared.';
+    restoring = true;
+    renderPreview();
+    restoring = false;
+    seedHistory();
+  });
+
+  el('undo').addEventListener('click', undo);
+  el('redo').addEventListener('click', redo);
+
+  window.addEventListener('keydown', function(e){
+    if (!(e.ctrlKey || e.metaKey)) return;
+    var k = (e.key || '').toLowerCase();
+    if (k === 'z' && !e.shiftKey){ e.preventDefault(); undo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)){ e.preventDefault(); redo(); }
   });
 
   /* ---------- the image layer ---------- */
@@ -935,6 +1111,7 @@
       imgPos.x = 0; imgPos.y = 0;
       el('iscale').value = 100;
       el('irot').value = 0;
+      lastBlob = file;
       showImgControls(true);
       status.textContent = '';
       putBlob('image', file);
@@ -965,6 +1142,7 @@
 
   el('removeimg').addEventListener('click', function(){
     userImg = null;
+    lastBlob = null;
     imgPos.x = 0; imgPos.y = 0;
     el('iscale').value = 100;
     el('irot').value = 0;
@@ -1056,7 +1234,9 @@
     }
   });
 
-  ['pointerup','pointercancel','pointerleave'].forEach(function(ev){
+  // Deliberately not pointerleave: the pointer is captured, so a drag that
+  // travels outside the canvas must keep going and still end on pointerup.
+  ['pointerup','pointercancel'].forEach(function(ev){
     preview.addEventListener(ev, function(e){
       if (!pointers.has(e.pointerId)) return;
       pointers.delete(e.pointerId);
@@ -1083,8 +1263,11 @@
 
   window.addEventListener('resize', schedule);
 
+  if (!hasCanvasFilter()) el('browsernote').hidden = false;
+
   loadSettings();
   renderPreview();
+  seedHistory();
   restoreImage();
 })();
 </script>
