@@ -97,9 +97,6 @@
     background-size:22px 22px;
     background-position:0 0,11px 11px;
   }
-  .frame[data-backdrop="white"]{background:#F2F0EB}
-  .frame[data-backdrop="black"]{background:#000}
-  .frame[data-backdrop="ink"]{background:#14131A}
 
   canvas#preview{
     display:block;
@@ -304,7 +301,7 @@
     <header>
       <h1>Rainbow Circle Maker</h1>
       <span class="sub" id="ringstat">—</span>
-      <span class="sub warn" id="browsernote" hidden>Safari draws the soft edges hard &mdash; Chrome, Edge or Firefox for the full effect</span>
+      <span class="sub warn" id="browsernote" hidden>Safari can't render Blur past 0.55% &mdash; Chrome, Edge or Firefox for that</span>
     </header>
 
     <div class="framewrap">
@@ -315,13 +312,14 @@
 
     <div class="stagefoot">
       <div class="backdrops">
-        <span>Preview against</span>
-        <button class="chip c-checker" data-bd="checker" aria-pressed="true" title="Transparent"></button>
-        <button class="chip c-white"   data-bd="white"   aria-pressed="false" title="White"></button>
-        <button class="chip c-black"   data-bd="black"   aria-pressed="false" title="Black"></button>
-        <button class="chip c-ink"     data-bd="ink"     aria-pressed="false" title="Dark"></button>
+        <span>Background</span>
+        <input type="hidden" id="bgmode" value="none">
+        <button class="chip c-checker" data-bg="none"    aria-pressed="true"  title="Transparent"></button>
+        <button class="chip c-white"   data-bg="#ffffff" aria-pressed="false" title="White"></button>
+        <button class="chip c-black"   data-bg="#000000" aria-pressed="false" title="Black"></button>
+        <input type="color" id="bgcolor" value="#eef4f6" title="Custom colour">
       </div>
-      <div class="readout">Exports as a square PNG</div>
+      <div class="readout" id="bgnote">Baked into the export</div>
     </div>
   </section>
 
@@ -371,6 +369,11 @@
 
     <fieldset>
       <legend>Color</legend>
+
+      <div class="row">
+        <div class="rowhead"><label for="style">Rainbow style</label><span class="val" id="v-style"></span></div>
+        <input type="range" id="style" min="0" max="100" step="1" value="100">
+      </div>
 
       <div class="row">
         <div class="rowhead"><label for="sat">Saturation</label><span class="val" id="v-sat"></span></div>
@@ -438,12 +441,49 @@
 (function(){
   'use strict';
 
-  var FULL = [
-    [255,0,0],[255,127,0],[255,255,0],[0,255,0],[0,0,255],[75,0,130],[148,0,211]
+  // Three palettes, blended by the Rainbow style slider. Each is a list of
+  // waypoints from the band's outer edge (0) inward (1), with its own uneven
+  // spacing — so the slider moves band widths as well as hues.
+  var PALETTES = [
+    // The slider runs Spectral to Luminous. A third, naturalistic palette
+    // sat at the far end for a while, but it was markedly duller than either
+    // of these and nobody wants to drag toward dull — so the axis is now just
+    // the two ends worth having.
+
+    // SPECTRAL — Newton's seven, evenly spaced. Textbook rather than observed:
+    // pure blue and indigo have very low luminance, so between brighter
+    // neighbours they read as a near-black stripe.
+    [ {p:0.000, c:[255,  0,  0]},
+      {p:0.167, c:[255,127,  0]},
+      {p:0.333, c:[255,255,  0]},
+      {p:0.500, c:[  0,255,  0]},
+      {p:0.667, c:[  0,  0,255]},
+      {p:0.833, c:[ 75,  0,130]},
+      {p:1.000, c:[148,  0,211]} ],
+
+    // LUMINOUS — the devotional look, and genuinely saturated: the difference
+    // from Spectral is where the band spends its width, not how vivid it is.
+    //
+    // Three things carry it. Yellow is a bright peak the band sits on rather
+    // than a point it crosses between orange and green. Blue appears only as a
+    // sliver — cyan at 0.60 to indigo at 0.76 — instead of holding a wide flat
+    // periwinkle. And indigo turns over into purple quickly, so violet and
+    // purple own the whole inner quarter and the inner edge reads purple
+    // rather than blue.
+    [ {p:0.00, c:[255,110, 70]},   // soft red-orange at the outer fringe
+      {p:0.11, c:[255,138, 38]},   // orange
+      {p:0.22, c:[255,186, 24]},   // amber
+      {p:0.32, c:[255,238, 56]},   // yellow — the brightest point in the band
+      {p:0.41, c:[214,240, 66]},   // yellow-green, brief
+      {p:0.50, c:[112,226,152]},   // green into cyan, brief
+      {p:0.60, c:[ 66,200,240]},   // cyan
+      {p:0.68, c:[ 76,128,240]},   // blue, only a sliver
+      {p:0.76, c:[124, 84,240]},   // indigo, crossed quickly
+      {p:0.86, c:[172, 76,234]},   // violet
+      // purple, holding the inner edge
+      {p:1.00, c:[202, 92,228]} ]
   ];
-  var SOFT = [
-    [255,178,178],[255,214,178],[255,255,178],[178,255,178],[178,178,255],[201,178,255],[229,178,255]
-  ];
+  var PALETTE_NAMES = ['Spectral','Luminous'];
 
   var el = function(id){ return document.getElementById(id); };
   var frame   = el('frame');
@@ -459,7 +499,8 @@
 
   var DEFAULTS = {
     diameter:74, width:7.4, blur:0.28,
-    sat:85, tintcolor:'#ffffff', tint:0,
+    bgmode:'none', bgcolor:'#eef4f6',
+    style:100, sat:85, tintcolor:'#ffffff', tint:0,
     inneron:false, innercolor:'#ffffff', innerwidth:100,
     outeron:true,  outercolor:'#ffffff', outerwidth:100
   };
@@ -476,18 +517,75 @@
     return 'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+','+a+')';
   }
 
-  // Band colour at index i, blended between soft and full by saturation.
-  function band(i, sat){
-    return lerp3(SOFT[i], FULL[i], sat);
+  function rgbToHsl(c){
+    var r=c[0]/255, g=c[1]/255, b=c[2]/255;
+    var mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
+    var h=0, l=(mx+mn)/2, sa=0;
+    if (d){
+      sa = l > 0.5 ? d/(2-mx-mn) : d/(mx+mn);
+      if (mx===r)      h = (g-b)/d + (g<b ? 6 : 0);
+      else if (mx===g) h = (b-r)/d + 2;
+      else             h = (r-g)/d + 4;
+      h *= 60;
+    }
+    return [h, sa, l];
+  }
+  function hue2rgb(p,q,t){
+    if (t<0) t+=1;
+    if (t>1) t-=1;
+    if (t < 1/6) return p+(q-p)*6*t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p+(q-p)*(2/3-t)*6;
+    return p;
+  }
+  function hslToRgb(h,sa,l){
+    h = (((h % 360) + 360) % 360) / 360;
+    if (sa === 0) return [l*255, l*255, l*255];
+    var q = l < 0.5 ? l*(1+sa) : l+sa-l*sa;
+    var p = 2*l - q;
+    return [hue2rgb(p,q,h+1/3)*255, hue2rgb(p,q,h)*255, hue2rgb(p,q,h-1/3)*255];
   }
 
-  // pos 0 = outer edge (red) -> 1 = inner edge (violet).
-  // Interpolates across adjacent hues, so the seven named colours are
-  // waypoints rather than discrete bands.
-  function spectrum(pos, sat){
-    var f = pos*6;
-    var i0 = Math.min(5, Math.floor(f));
-    return lerp3(band(i0,sat), band(i0+1,sat), f-i0);
+  // Blend two palettes by rotating hue the short way round and interpolating
+  // saturation and lightness. A straight RGB lerp between two different hues
+  // cuts a chord through the colour solid and passes nearer the grey axis than
+  // either end, so the midpoint of the slider would go dull.
+  function mixHue(a, b, t){
+    if (t <= 0) return a;
+    if (t >= 1) return b;
+    var A = rgbToHsl(a), B = rgbToHsl(b);
+    var dh = B[0] - A[0];
+    if (dh > 180) dh -= 360; else if (dh < -180) dh += 360;
+    return hslToRgb(A[0] + dh*t, A[1] + (B[1]-A[1])*t, A[2] + (B[2]-A[2])*t);
+  }
+
+  function atStops(stops, pos){
+    var i = 0;
+    while (i < stops.length - 2 && pos > stops[i+1].p) i++;
+    var a = stops[i], b = stops[i+1];
+    var span = b.p - a.p;
+    return lerp3(a.c, b.c, span > 0 ? (pos - a.p)/span : 0);
+  }
+
+  // pos 0 = outer edge inward to 1. Blends adjacent palettes rather than
+  // switching between them, so the slider is continuous. style runs 0..1
+  // across the whole set.
+  function spectrum(pos, sat, style){
+    pos = Math.min(1, Math.max(0, pos));
+    var t = Math.min(1, Math.max(0, style)) * (PALETTES.length - 1);
+    var i = Math.min(PALETTES.length - 2, Math.floor(t));
+    var c = mixHue(atStops(PALETTES[i], pos), atStops(PALETTES[i+1], pos), t - i);
+    // Saturation runs from a white-mixed pastel up to the full colour.
+    return lerp3(lerp3(c, [255,255,255], 0.6), c, sat);
+  }
+
+  function styleName(style){
+    var t = Math.min(1, Math.max(0, style)) * (PALETTE_NAMES.length - 1);
+    var i = Math.min(PALETTE_NAMES.length - 2, Math.floor(t));
+    var f = t - i;
+    if (f < 0.02) return PALETTE_NAMES[i];
+    if (f > 0.98) return PALETTE_NAMES[i+1];
+    return PALETTE_NAMES[i] + ' \u2192 ' + PALETTE_NAMES[i+1];
   }
 
   // Applied once. In the tkinter version apply_tint ran twice per colour,
@@ -504,12 +602,14 @@
       diameter:   parseFloat(el('diameter').value),
       width:      parseFloat(el('width').value),
       blur:       parseFloat(el('blur').value),
+      bg:         el('bgmode').value,
       img:        userImg,
       ix:         imgPos.x,
       iy:         imgPos.y,
       iscale:     parseFloat(el('iscale').value)/100,
       irot:       parseFloat(el('irot').value),
       sat:        parseFloat(el('sat').value)/100,
+      style:      parseFloat(el('style').value)/100,
       tintRgb:    hexToRgb(el('tintcolor').value),
       tint:       parseFloat(el('tint').value),
       innerOn:    el('inneron').checked,
@@ -523,35 +623,51 @@
 
   /* ---------- geometry ---------- */
 
-  // Everything the drawing needs, in pixels, for a canvas of a given size.
+  // Blur is split in two.
   //
-  // Both glow sliders run in two phases. Over the first half the fade's far
-  // end travels outward (or inward) until it spans the whole available run.
-  // Over the second half a solid plateau grows in behind it. So 50% is a
-  // full-length gradient and 100% is flat colour edge to edge.
+  // A uniform Gaussian softens the band's alpha edges AND smears the hue
+  // transitions inside it. Only the first is wanted: the second mixes yellow
+  // toward orange and green, so the brightest, purest part of the band is
+  // exactly the part it damages most.
+  //
+  // So up to BLUR_SPLIT the setting feeds alpha ramps at the inner and outer
+  // edges — no convolution, colours untouched, the yellow peak stays pure.
+  // Past it the ramps hold at full width and a real Gaussian comes in on top,
+  // softening everything together. Edge feathering therefore needs no
+  // ctx.filter, which is why soft edges survive in Safari.
+  var BLUR_SPLIT = 0.55;   // percent of frame
+
   function geometry(size, p){
     var c = size/2;
     var outerR = size * p.diameter / 200;
     var ringW  = Math.min(size * p.width / 100, outerR);
-    var blurPx = size * p.blur / 100;
+    var blurPx   = size * p.blur / 100;
+    var splitPx  = size * BLUR_SPLIT / 100;
+    var feather  = Math.min(blurPx, splitPx) * 2;
+    var gauss    = Math.max(0, blurPx - splitPx);
     var k = 1;
 
-    // Keep the band's blurred outer edge inside the frame. A Gaussian is
-    // visibly gone by about 2.5 sigma. Glow reach is deliberately excluded
-    // from this: it is allowed to leave the frame, so it must never move
-    // the band. Only large diameters or heavy blur trigger any scaling.
-    var need = outerR + blurPx * 2.5;
+    // Fit guards the band alone — diameter plus its feather plus the tail of
+    // any Gaussian. Glow reach is excluded: it may leave the frame, so it must
+    // never move the band.
+    var need = outerR + feather + gauss * 2.5;
     if (need > c && need > 0){
       k = c / need;
-      outerR *= k;
-      ringW  *= k;
-      blurPx *= k;
+      outerR  *= k;
+      ringW   *= k;
+      feather *= k;
+      gauss   *= k;
     }
 
     var innerR = Math.max(0, outerR - ringW);
 
-    // The far corner is the last pixel any glow has to cover. A little margin
-    // past it guarantees the corners are inside the fill, not on its boundary.
+    // The image is cropped past the band's inner feather, so that feather
+    // lands on solid image rather than on a hard cut.
+    var cropR = Math.max(innerR + ringW * 0.5, innerR + feather * 1.1);
+    cropR = Math.min(cropR, outerR);
+
+    // The far corner is the last pixel any glow has to cover; a little margin
+    // past it keeps the corners inside the fill rather than on its boundary.
     var corner = c * Math.SQRT2 * 1.06;
 
     var oT   = (p.outerOn ? p.outerReach : 0);
@@ -560,152 +676,137 @@
     var oPlat = outerR + oRun * Math.max(0, oT * 2 - 1);
 
     var iT = (p.innerOn ? p.innerReach : 0);
-    var iFade = innerR * (1 - Math.min(1, iT * 2));   // transparent inside this
-    var iPlat = innerR * (1 - Math.max(0, iT * 2 - 1)); // solid outside this
-
-    // The image is cropped at the band's midline: past the band's inner
-    // fade so that fade lands on solid image, and short of its outer fade
-    // so the image never shows through the outside edge.
-    var cropR = innerR + ringW * 0.5;
+    var iFade = innerR * (1 - Math.min(1, iT * 2));
+    var iPlat = innerR * (1 - Math.max(0, iT * 2 - 1));
 
     return {
       c:c, outerR:outerR, ringW:ringW, innerR:innerR, cropR:cropR,
-      tIn: outerR > 0 ? innerR/outerR : 0,
       maxR:maxR, oPlat:oPlat, iFade:iFade, iPlat:iPlat,
-      blurPx:blurPx, k:k
+      feather:feather, gauss:gauss, k:k
     };
   }
 
   /* ---------- render ---------- */
 
+  function smoothstep(t){
+    t = Math.min(1, Math.max(0, t));
+    return t * t * (3 - 2 * t);
+  }
+
   function draw(size, p){
     var G = geometry(size, p);
-    var blurPx = G.blurPx;
+    var f = G.feather, gauss = G.gauss;
+    var outerR = G.outerR, innerR = G.innerR, ringW = G.ringW;
 
-    // Render onto a padded canvas and crop back. Without the margin the blur
-    // samples transparency just outside the frame and feathers the border —
-    // which at full outer flood looks exactly like the image being cut off.
-    var pad = blurPx > 0.05
-      ? Math.min(Math.ceil(blurPx * 3), Math.ceil(size * 0.06))
+    // Padding only matters when there is a Gaussian: without it the filter
+    // samples transparency past the frame and feathers the border, which at
+    // full outer flood looks like the image being cut off.
+    var pad = gauss > 0.05
+      ? Math.min(Math.ceil(gauss * 3), Math.ceil(size * 0.06))
       : 0;
     var W = size + pad * 2;
+    var c = W / 2;
 
     var base = document.createElement('canvas');
     base.width = base.height = W;
     var ctx = base.getContext('2d');
 
-    var c = W / 2;
-    var outerR = G.outerR, innerR = G.innerR, tIn = G.tIn;
-
-    function cut(r){
-      ctx.fillStyle = '#000';
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath(); ctx.arc(c,c,r,0,Math.PI*2); ctx.fill();
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    // --- outer glow, underneath everything ---
-    // Painted as a full disc, then the interior is cut away at outerR.
+    // --- outer glow, underneath the band ---
+    // Transparency is built into the gradient, so no destination-out cut is
+    // needed. Its inner boundary sits one feather inside the band's outer
+    // edge, where the band is still fully opaque and hides the transition.
     if (p.outerOn && p.outerReach > 0 && outerR > 0){
-      var maxR = G.maxR;
-      var t0 = outerR / maxR;
+      var gcut = Math.max(0, outerR - f);
+      var maxR = Math.max(G.maxR, gcut + 1);
+      var t0 = gcut / maxR;
       var tP = Math.min(0.9995, Math.max(t0, G.oPlat / maxR));
       var og = ctx.createRadialGradient(c,c,0,c,c,maxR);
-      og.addColorStop(0,  rgba(p.outerRgb,1));
+      og.addColorStop(0, rgba(p.outerRgb,0));
+      if (t0 > 0.0012) og.addColorStop(t0 - 0.001, rgba(p.outerRgb,0));
       og.addColorStop(t0, rgba(p.outerRgb,1));
       og.addColorStop(tP, rgba(p.outerRgb,1));
       og.addColorStop(1,  rgba(p.outerRgb,0));
       ctx.fillStyle = og;
       ctx.beginPath(); ctx.arc(c,c,maxR,0,Math.PI*2); ctx.fill();
-      cut(outerR);
     }
 
-    // --- the rainbow band ---
+    // --- the band, with its edges feathered in alpha ---
     if (outerR > 0){
-      var rg = ctx.createRadialGradient(c,c,0,c,c,outerR);
-      var stops = [];
-      var i, pos, t, col;
-
-      var N = 64;
-      for (i=0;i<=N;i++){
-        pos = i/N;
-        t = 1 - pos*(1-tIn);
-        col = tinted(spectrum(pos,p.sat), p.tintRgb, p.tint);
-        stops.push([t, rgba(col,1)]);
+      var R = outerR + f;
+      var rg = ctx.createRadialGradient(c,c,0,c,c,R);
+      var N = 96;
+      for (var i = 0; i <= N; i++){
+        var r = R * i / N;
+        var pos = ringW > 0 ? Math.min(1, Math.max(0, (outerR - r) / ringW)) : 0;
+        var a;
+        if (f > 0.01){
+          // ramp up across the inner edge, down across the outer one
+          a = smoothstep(Math.min((R - r) / (2*f), (r - (innerR - f)) / (2*f)));
+        } else {
+          a = (r >= innerR && r <= outerR) ? 1 : 0;
+        }
+        var col = tinted(spectrum(pos, p.sat, p.style), p.tintRgb, p.tint);
+        rg.addColorStop(i / N, rgba(col, a));
       }
-
-      stops.sort(function(a,b){ return a[0]-b[0]; });
-
-      // hard cut on the inside edge of the band
-      if (tIn > 0.002){
-        rg.addColorStop(0, 'rgba(0,0,0,0)');
-        rg.addColorStop(tIn - 0.001, 'rgba(0,0,0,0)');
-      }
-      for (i=0;i<stops.length;i++){
-        rg.addColorStop(Math.min(1, Math.max(0, stops[i][0])), stops[i][1]);
-      }
-
       ctx.fillStyle = rg;
-      ctx.beginPath(); ctx.arc(c,c,outerR,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(c,c,R,0,Math.PI*2); ctx.fill();
     }
 
-    // --- clear the centre ---
-    // The band's innermost stop fills the whole disc, and the outer glow
-    // sat under it, so the interior has to be cut before anything else goes in.
-    // Note the explicit opaque fillStyle inside cut(): destination-out erases
-    // in proportion to source alpha, so cutting with the band's own gradient
-    // (transparent across the interior) would erase nothing at all.
-    if (innerR > 0) cut(innerR);
-
-    // --- composite, bottom to top: inner glow, image, then the ring ---
-    // The ring is blurred on its way into the output; the image is not, so it
-    // stays sharp. Its crop mask gets the same blur radius, which means the
-    // band's soft inner edge fades onto solid image instead of onto a hard cut.
+    // --- composite, bottom to top: background, inner glow, image, band ---
     var out = document.createElement('canvas');
     out.width = out.height = size;
     var octx = out.getContext('2d');
-    var oc = size/2;
+    var oc = size / 2;
 
-    // Inner glow is the bottom layer — a backdrop the image sits on, not a
-    // wash over it. Filled out to the band's midline (the same radius the
-    // image is cropped at) so its own feathered edge hides under the opaque
-    // band instead of leaving a translucent seam where the two layers meet.
-    if (p.innerOn && p.innerReach > 0 && G.innerR > 0){
-      var tF = Math.max(0, Math.min(0.999, G.iFade / G.innerR));
-      var tI = Math.min(1, Math.max(tF + 0.0005, G.iPlat / G.innerR));
-      var ig = octx.createRadialGradient(oc,oc,0,oc,oc,G.innerR);
+    if (p.bg && p.bg !== 'none'){
+      octx.fillStyle = p.bg;
+      octx.fillRect(0, 0, size, size);
+    }
+
+    // Inner glow is the bottom layer of the artwork — a backdrop the image
+    // sits on, not a wash over it.
+    if (p.innerOn && p.innerReach > 0 && innerR > 0){
+      var tF = Math.max(0, Math.min(0.999, G.iFade / innerR));
+      var tI = Math.min(1, Math.max(tF + 0.0005, G.iPlat / innerR));
+      var ig = octx.createRadialGradient(oc,oc,0,oc,oc,innerR);
       ig.addColorStop(0, rgba(p.innerRgb,0));
       if (tF > 0.0005) ig.addColorStop(tF, rgba(p.innerRgb,0));
       ig.addColorStop(tI, rgba(p.innerRgb,1));
       ig.addColorStop(1,  rgba(p.innerRgb,1));
-      octx.save();
-      if (blurPx > 0.05) octx.filter = 'blur(' + blurPx + 'px)';
       octx.fillStyle = ig;
       octx.beginPath(); octx.arc(oc,oc,G.cropR,0,Math.PI*2); octx.fill();
-      octx.restore();
     }
 
+    // The image is never blurred. Its crop mask is a gradient rather than a
+    // filtered fill, so the feathered edge works without ctx.filter too.
     if (p.img && p.img.width){
       var im = p.img;
       var layer = document.createElement('canvas');
-      layer.width = layer.height = W;
+      layer.width = layer.height = size;
       var lx = layer.getContext('2d');
       var cover = (2 * G.cropR) / Math.max(1, Math.min(im.width, im.height));
       var sc = cover * p.iscale;
       var dw = im.width * sc, dh = im.height * sc;
       lx.save();
-      lx.translate(c + p.ix*size, c + p.iy*size);
+      lx.translate(oc + p.ix*size, oc + p.iy*size);
       if (p.irot) lx.rotate(p.irot * Math.PI / 180);
       lx.drawImage(im, -dw/2, -dh/2, dw, dh);
       lx.restore();
+
       lx.globalCompositeOperation = 'destination-in';
-      if (blurPx > 0.05) lx.filter = 'blur(' + blurPx + 'px)';
-      lx.fillStyle = '#000';
-      lx.beginPath(); lx.arc(c,c,G.cropR,0,Math.PI*2); lx.fill();
-      octx.drawImage(layer, -pad, -pad);
+      var mR = G.cropR + f;
+      var mt = Math.max(0, (G.cropR - f) / mR);
+      var mg = lx.createRadialGradient(oc,oc,0,oc,oc,mR);
+      mg.addColorStop(0, 'rgba(0,0,0,1)');
+      if (mt > 0.001) mg.addColorStop(mt, 'rgba(0,0,0,1)');
+      mg.addColorStop(1, 'rgba(0,0,0,0)');
+      lx.fillStyle = mg;
+      lx.beginPath(); lx.arc(oc,oc,mR,0,Math.PI*2); lx.fill();
+
+      octx.drawImage(layer, 0, 0);
     }
 
-    if (blurPx > 0.05) octx.filter = 'blur(' + blurPx + 'px)';
+    if (gauss > 0.05) octx.filter = 'blur(' + gauss + 'px)';
     octx.drawImage(base, -pad, -pad);
     return out;
   }
@@ -739,7 +840,8 @@
   // permissions) it silently does nothing and the tool works as normal.
 
   var SETTINGS_KEY = 'rainbow-circle-maker/settings';
-  var SAVED_FIELDS = ['diameter','width','blur','sat','tint','tintcolor',
+  var SAVED_FIELDS = ['diameter','width','blur','bgmode','bgcolor',
+                      'style','sat','tint','tintcolor',
                       'inneron','innercolor','innerwidth',
                       'outeron','outercolor','outerwidth','iscale','irot'];
   var db = null;
@@ -967,6 +1069,7 @@
     el('v-iscale').textContent     = Math.round(p.iscale*100) + '%';
     el('v-irot').textContent       = (p.irot > 0 ? '+' : '') + p.irot + '\u00B0';
     el('v-sat').textContent        = Math.round(p.sat*100) + '%';
+    el('v-style').textContent      = styleName(p.style);
     el('v-tint').textContent       = p.tint + '%';
     el('v-innerwidth').textContent = Math.round(p.innerReach*100) + '%';
     el('v-outerwidth').textContent = Math.round(p.outerReach*100) + '%';
@@ -974,6 +1077,8 @@
     // What these settings actually produce at full export size — after
     // fitting, which is the number that matters when the ring has to sit
     // on top of something else.
+    syncBackground();
+
     var G6 = geometry(6000, p);
     ringstat.textContent = Math.round(G6.outerR*2) + 'px ring · ' +
                            Math.round(G6.ringW) + 'px band at 6000';
@@ -1013,7 +1118,7 @@
 
   /* ---------- wiring ---------- */
 
-  var inputs = ['diameter','width','blur','sat','tint','tintcolor',
+  var inputs = ['diameter','width','blur','style','sat','tint','tintcolor',
                 'inneron','innercolor','innerwidth',
                 'outeron','outercolor','outerwidth'];
 
@@ -1031,12 +1136,30 @@
 
   Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(b){
     b.addEventListener('click', function(){
-      frame.dataset.backdrop = b.dataset.bd;
-      Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(o){
-        o.setAttribute('aria-pressed', String(o === b));
-      });
+      el('bgmode').value = b.dataset.bg;
+      schedule();
     });
   });
+
+  el('bgcolor').addEventListener('input', function(){
+    el('bgmode').value = this.value;
+    schedule();
+  });
+
+  // Reflect the current background on the swatches, wherever it came from —
+  // a click, a restored session, undo, or reset.
+  function syncBackground(){
+    var mode = el('bgmode').value;
+    Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(o){
+      o.setAttribute('aria-pressed', String(o.dataset.bg === mode));
+    });
+    var custom = mode !== 'none' && mode !== '#ffffff' && mode !== '#000000';
+    if (custom) el('bgcolor').value = mode;
+    el('bgcolor').style.outline = custom ? '2px solid var(--gold)' : '';
+    el('bgnote').textContent = mode === 'none'
+      ? 'Transparent PNG'
+      : 'Background baked into the export';
+  }
 
   Array.prototype.forEach.call(document.querySelectorAll('.exp'), function(b){
     b.addEventListener('click', function(){ exportAt(parseInt(b.dataset.size,10)); });
