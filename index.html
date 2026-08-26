@@ -319,6 +319,11 @@
         <button class="chip c-black"   data-bg="#000000" aria-pressed="false" title="Black"></button>
         <input type="color" id="bgcolor" value="#eef4f6" title="Custom colour">
       </div>
+      <div class="backdrops">
+        <span>Scale</span>
+        <input type="range" id="fill" min="50" max="140" step="1" value="100" style="width:104px">
+        <span class="val" id="v-fill"></span>
+      </div>
       <div class="readout" id="bgnote">Baked into the export</div>
     </div>
   </section>
@@ -358,7 +363,7 @@
 
       <div class="row">
         <div class="rowhead"><label for="width">Band width</label><span class="val" id="v-width"></span></div>
-        <input type="range" id="width" min="0.5" max="50" step="0.25" value="7.4">
+        <input type="range" id="width" min="0.5" max="50" step="0.25" value="7">
       </div>
 
       <div class="row">
@@ -377,7 +382,7 @@
 
       <div class="row">
         <div class="rowhead"><label for="sat">Saturation</label><span class="val" id="v-sat"></span></div>
-        <input type="range" id="sat" min="0" max="100" step="1" value="85">
+        <input type="range" id="sat" min="0" max="100" step="1" value="100">
       </div>
 
       <div class="inline">
@@ -498,9 +503,9 @@
   var imgPos   = {x:0, y:0};
 
   var DEFAULTS = {
-    diameter:74, width:7.4, blur:0.28,
+    diameter:74, width:7, blur:0.28, fill:100,
     bgmode:'none', bgcolor:'#eef4f6',
-    style:100, sat:85, tintcolor:'#ffffff', tint:0,
+    style:100, sat:100, tintcolor:'#ffffff', tint:0,
     inneron:false, innercolor:'#ffffff', innerwidth:100,
     outeron:true,  outercolor:'#ffffff', outerwidth:100
   };
@@ -603,6 +608,7 @@
       width:      parseFloat(el('width').value),
       blur:       parseFloat(el('blur').value),
       bg:         el('bgmode').value,
+      fill:       parseFloat(el('fill').value)/100,
       img:        userImg,
       ix:         imgPos.x,
       iy:         imgPos.y,
@@ -639,12 +645,19 @@
 
   function geometry(size, p){
     var c = size/2;
-    var outerR = size * p.diameter / 200;
-    var ringW  = Math.min(size * p.width / 100, outerR);
+
+    // Scale multiplies the whole composition — band, thickness and feather
+    // together — so the artwork grows or shrinks against the background
+    // without changing its proportions. Diameter and band width remain the
+    // proportion controls; this one is the zoom.
+    var fill = (p.fill == null ? 1 : p.fill);
+
+    var outerR = size * p.diameter / 200 * fill;
+    var ringW  = Math.min(size * p.width / 100 * fill, outerR);
     var blurPx   = size * p.blur / 100;
     var splitPx  = size * BLUR_SPLIT / 100;
-    var feather  = Math.min(blurPx, splitPx) * 2;
-    var gauss    = Math.max(0, blurPx - splitPx);
+    var feather  = Math.min(blurPx, splitPx) * 2 * fill;
+    var gauss    = Math.max(0, blurPx - splitPx) * fill;
     var k = 1;
 
     // Fit guards the band alone — diameter plus its feather plus the tail of
@@ -840,7 +853,7 @@
   // permissions) it silently does nothing and the tool works as normal.
 
   var SETTINGS_KEY = 'rainbow-circle-maker/settings';
-  var SAVED_FIELDS = ['diameter','width','blur','bgmode','bgcolor',
+  var SAVED_FIELDS = ['diameter','width','blur','fill','bgmode','bgcolor',
                       'style','sat','tint','tintcolor',
                       'inneron','innercolor','innerwidth',
                       'outeron','outercolor','outerwidth','iscale','irot'];
@@ -1066,6 +1079,7 @@
     el('v-diameter').textContent   = p.diameter.toFixed(1) + '% of frame';
     el('v-width').textContent      = p.width.toFixed(2) + '% of frame';
     el('v-blur').textContent       = p.blur.toFixed(2) + '% of frame';
+    el('v-fill').textContent       = Math.round(p.fill*100) + '%';
     el('v-iscale').textContent     = Math.round(p.iscale*100) + '%';
     el('v-irot').textContent       = (p.irot > 0 ? '+' : '') + p.irot + '\u00B0';
     el('v-sat').textContent        = Math.round(p.sat*100) + '%';
@@ -1118,7 +1132,7 @@
 
   /* ---------- wiring ---------- */
 
-  var inputs = ['diameter','width','blur','style','sat','tint','tintcolor',
+  var inputs = ['diameter','width','blur','fill','style','sat','tint','tintcolor',
                 'inneron','innercolor','innerwidth',
                 'outeron','outercolor','outerwidth'];
 
